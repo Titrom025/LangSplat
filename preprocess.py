@@ -233,21 +233,24 @@ def mask_nms(masks, scores, iou_thr=0.7, score_thr=0.1, inner_thr=0.2, **kwargs)
     masks_ord = masks[idx.view(-1), :]
     masks_area = torch.sum(masks_ord, dim=(1, 2), dtype=torch.float)
 
-    iou_matrix = torch.zeros((num_masks,) * 2, dtype=torch.float, device=masks.device)
+    intersections = torch.matmul(masks_ord.flatten(1).float(), masks_ord.flatten(1).float().t())
+    unions = masks_area.unsqueeze(1) + masks_area.unsqueeze(0) - intersections
+    iou_matrix = intersections / unions
+    
     inner_iou_matrix = torch.zeros((num_masks,) * 2, dtype=torch.float, device=masks.device)
-    for i in range(num_masks):
-        for j in range(i, num_masks):
-            intersection = torch.sum(torch.logical_and(masks_ord[i], masks_ord[j]), dtype=torch.float)
-            union = torch.sum(torch.logical_or(masks_ord[i], masks_ord[j]), dtype=torch.float)
-            iou = intersection / union
-            iou_matrix[i, j] = iou
-            # select mask pairs that may have a severe internal relationship
-            if intersection / masks_area[i] < 0.5 and intersection / masks_area[j] >= 0.85:
-                inner_iou = 1 - (intersection / masks_area[j]) * (intersection / masks_area[i])
-                inner_iou_matrix[i, j] = inner_iou
-            if intersection / masks_area[i] >= 0.85 and intersection / masks_area[j] < 0.5:
-                inner_iou = 1 - (intersection / masks_area[j]) * (intersection / masks_area[i])
-                inner_iou_matrix[j, i] = inner_iou
+
+    intersection_ratios_i = intersections / masks_area.unsqueeze(1)
+    intersection_ratios_j = intersections / masks_area.unsqueeze(0)
+
+    inner_iou_values = 1 - (intersection_ratios_i * intersection_ratios_j)
+
+    condition1_upper = (intersection_ratios_i < 0.5) & (intersection_ratios_j >= 0.85)
+    condition2_upper = (intersection_ratios_i >= 0.85) & (intersection_ratios_j < 0.5)
+
+    inner_iou_matrix = torch.where(condition1_upper, inner_iou_values, inner_iou_matrix)
+    inner_iou_matrix = torch.where(condition2_upper, inner_iou_values, inner_iou_matrix.t()).t()
+
+    inner_iou_matrix.fill_diagonal_(0)
 
     iou_matrix.triu_(diagonal=1)
     iou_max, _ = iou_matrix.max(dim=0)
